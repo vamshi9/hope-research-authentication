@@ -15,6 +15,12 @@ const userSchema = {
     password:{
         type: String,
         required: true
+    },
+    reset_password_token:{
+        type: String
+    },
+    reset_password_expires:{
+        type: String
     }
 };
 

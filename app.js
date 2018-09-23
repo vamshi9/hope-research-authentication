@@ -9,9 +9,26 @@ const logger = require('morgan');
 const cookieParser = require('cookie-parser');
 const bodyParser = require('body-parser');
 const port = process.env.PORT || 3000;
+const mongoose = require('mongoose');
 
+// routes
 const routes = require('./api/routes/index');
 const users = require('./api/routes/users');
+
+// mongoose connection
+const uri = process.env.MONGO_URI
+mongoose.connect(uri,{
+    useNewUrlParser: true
+  })
+  .catch(err => {
+    console.log(err);
+    res.status(500).json({
+      message: 'Sorry there is some issue with databse connection. Please check you internet.',
+      error:err
+    });
+  });
+mongoose.Promise= global.Promise; 
+
 
 const app = express();
 

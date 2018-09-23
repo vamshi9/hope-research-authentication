@@ -1,16 +1,41 @@
-var express = require('express');
+const express = require('express');
 const router = express.Router();
 const User = require('../models/user');
-const mongoose = require('/mongoose');
+const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
+const nodemailer = require('nodemailer');
+const async = require('async');
+const checkAuth = require('../middleware/auth.js');
+
+/* Nodemailer configuration */
+let transporter = nodemailer.createTransport({
+  host: 'smtp.ethereal.email',
+  port: 587,
+  secure: false, // true for 465, false for other ports
+  auth: {
+    user: 'bmikwwpaddsz4vze@ethereal.email', // generated ethereal user
+    pass: 'y4SPt7j5fv7eDheWKX' // generated ethereal password
+  },
+  tls: {
+    rejectUnauthorized: false
+  }
+
+});
+
 
 /* GET users listing. */
-router.get('/', function (req, res, next) {
+router.post('/', checkAuth, (req, res, next) => {
+  //res.render('login', {title: 'Login page'})
   User.find()
     .select('id email password')
     .exec()
     .then(users => {
+      if (users.length < 1) {
+        return res.status(500).json({
+          message: 'Sorry there are no users'
+        })
+      }
       console.log(users);
       res.status(200).json({
         users
@@ -22,64 +47,75 @@ router.get('/', function (req, res, next) {
         message: 'Damn, something went wrong dude!'
       });
     });
+  //next();
 });
 
 
-router.post('/signup', (req, res, next) => {
+router.post('/signup',(req, res, next) => {
   User.find({
-    email: req.body.email
-  })
-  .exec()
-  .then(user => {
-    
-    if(user.length >= 1){
-      //conflict with the existing database
-      return res.status(409).json({
-        message: 'Sorry, bruh! One has to use their own shit'
-      });
-    }
+      email: req.body.email
+    })
+    .exec()
+    .then(user => {
 
-    //hashing the password with salt-9
-    bcrypt.hash(req.body.password, 9, (err, hash) => {
-      if(err){
-        return res.status(500).json({
-          error: err
+      if (user.length >= 1) {
+        //conflict with the existing database
+        return res.status(409).json({
+          message: 'Sorry, bruh! One has to use their own shit'
         });
-      }else{
-        const user = new User({
-          _id: new mongoose.Types.ObjectId(),
-          username: req.body.username,
-          email: req.body.email,
-          password: hash
-        });
-
-        user.save()
-            .then(result => {
-              console.log(result);
-              res.status(201).json({
-                message: 'User Created'
-              });
-            })
-            .catch(err => {
-              console.log(err);
-              res.status(500).json({
-                error: err
-              })
+      } else {
+        //console.log('entered')
+        //hashing the password with salt-9
+        bcrypt.hash(req.body.password, 9, (err, hash) => {
+          if (err) {
+            return res.status(500).json({
+              error: err
             });
+          } else {
+            const token = jwt.sign({
+                email: req.body.email,
+                userId: req.body._id
+              },
+              process.env.JWT_KEY, 
+              {
+                expiresIn: '1hr'
+              }
+            )
+            const user = new User({
+              _id: new mongoose.Types.ObjectId(),
+              username: req.body.username,
+              email: req.body.email,
+              password: hash,
+            });
+
+            user.save()
+              .then(result => {
+                console.log(result);
+                res.status(201).json({
+                  message: 'User Created',
+                  token: token
+                });
+              })
+              .catch(err => {
+                console.log(err);
+                res.status(500).json({
+                  error: err
+                })
+              });
+          }
+        })
       }
     })
-  
-  })
-  .catch(err => {
-    console.log(err);
-    res.status(500).json({
-      error: err
-    })
-  })
+    .catch(err => {
+      console.log(err);
+      res.status(500).json({
+        error: err
+      })
+    });
 })
 
 
-router.post('/login', (req, res, next) => {
+router.post('/login',(req, res, next) => {
   User.find({
       email: req.body.email
     })
@@ -125,9 +161,142 @@ router.post('/login', (req, res, next) => {
 
 
 router.post('/forgot-password', (req, res, next) => {
-  res.render('forgot', {
-    title: 'forgot'
-  });
+  async.waterfall([
+    (done) => {
+      User.findOne({
+          email: req.body.email
+        })
+        .exec((err, user) => {
+          if (user) {
+            done(err, user);
+          } else {
+            done('sorry, dude! we did not find ya!');
+          }
+        })
+    },
+
+    (user, done) => {
+
+      const token = jwt.sign({
+          email: user.email,
+          userId: user._id
+        },
+        process.env.JWT_KEY, {
+          expiresIn: '1hr'
+        },
+        (err, token) => {
+          done(err, user, token);
+        })
+    },
+
+    (user, token, done) => {
+      User.updateOne({
+          _id: user._id
+        }, {
+          reset_password_token: token,
+          reset_password_expires: Date.now() + 3600000,
+        }, {
+          upsert: true,
+          new: true
+        })
+        .exec((err, new_user) => {
+          done(err, token, new_user)
+        })
+    },
+
+    (token, user, done) => {
+      // setup email data with unicode symbols
+      let mailOptions = {
+        from: '"VK 👻" <bmikwwpaddsz4vze@ethereal.email>', // sender address
+        to: req.body.email, // list of receivers
+        subject: 'password reset ✔', // Subject line
+        text: `hey ${user.username}! Please click below to reset you password
+  localhost:7000/users/reset-password/:${token}`, // plain text body
+        html: `<a href="localhost:7000/users/reset-password/:${token}">Password Reset</a>` // html body
+      };
+      // send mail with defined transport object
+      transporter.sendMail(mailOptions, (error, info) => {
+        if (error) {
+          return console.log(error);
+        }
+        console.log('Message sent: %s', info.messageId);
+        // Preview only available when sending through an Ethereal account
+        console.log('Preview URL: %s', nodemailer.getTestMessageUrl(info));
+
+        res.status(200).json({
+          message: 'Email has been sent!'
+        })
+        // Message sent: <b658f8ca-6296-ccf4-8306-87d57a0b4321@example.com>
+        // Preview URL: https://ethereal.email/message/WaQKMgKddxQDoou...
+      });
+    }
+  ], (err) => {
+    return res.status(422).json({
+      message: err
+    });
+  })
+
 })
 
+
+router.patch('/reset-password/', (req, res, next) => {
+  //ofcourse we can handle it with params
+  const token = req.body.token;
+  User.findOne({
+      reset_password_token: token,
+      reset_password_expires: {
+        $gt: Date.now()
+      }
+    })
+    .exec((err, user) => {
+      console.log(user);
+      if (!err && user) {
+        if (req.body.newPassword === req.body.confirmPassword) {
+          user.hash_password = bcrypt.hashSync(req.body.newPassword, 9);
+          user.reset_password_token = undefined;
+          user.reset_password_expires = undefined;
+          user.save((err) => {
+            if (err) {
+              return res.status(500).json({
+                message: err
+              });
+            } else {
+              // setup email data with unicode symbols
+              let mailOptions = {
+                from: '"VK 👻" <bmikwwpaddsz4vze@ethereal.email>', // sender address
+                to: user.email, // list of receivers
+                subject: 'password reset confirmation', // Subject line
+                text: 'Password succesfully reset', // plain text body
+                html: `<a href="localhost:7000/">Login here</a>` // html body
+              };
+              // send mail with defined transport object
+              transporter.sendMail(mailOptions, (error, info) => {
+                if (error) {
+                  return console.log(error);
+                }
+                console.log('Message sent: %s', info.messageId);
+                // Preview only available when sending through an Ethereal account
+                console.log('Preview URL: %s', nodemailer.getTestMessageUrl(info));
+
+                res.status(200).json({
+                  message: 'Confirmation email has been sent!'
+                })
+                // Message sent: <b658f8ca-6296-ccf4-8306-87d57a0b4321@example.com>
+                // Preview URL: https://ethereal.email/message/WaQKMgKddxQDoou...
+              });
+            }
+          })
+        } else {
+          return res.status(500).json({
+            message: 'Passwords did not match'
+          });
+        }
+      } else {
+        return res.status(500).json({
+          message: 'Password reset token is expired or invalid!'
+        })
+      }
+    })
+
+})
 module.exports = router;
